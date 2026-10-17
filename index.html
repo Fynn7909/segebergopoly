@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1020">
+  <title>Bad Segeberg – Das Stadtspiel</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Archivo+Black&family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="scene"></div>
+
+  <!-- Startmenü & Lobby -->
+  <div id="menu" class="overlay">
+    <div class="menu-card glass">
+      <div class="logo-big">
+        <div class="logo-kicker">Das Stadtspiel</div>
+        <h1>BAD SEGEBERG</h1>
+        <div class="logo-sub">Kaufen. Bauen. Abkassieren. Von der Burgfeldstraße bis zum Kalkberg.</div>
+      </div>
+
+      <section id="menu-start">
+        <label class="field-label">Dein Name</label>
+        <input id="in-name" maxlength="16" placeholder="z. B. Fynn" autocomplete="off">
+        <label class="field-label">Deine Spielfigur</label>
+        <div id="token-pick" class="token-pick"></div>
+        <div class="menu-buttons">
+          <button id="btn-host" class="btn primary big">🌐 Online-Spiel erstellen</button>
+          <div class="join-row">
+            <input id="in-code" maxlength="5" placeholder="CODE" autocomplete="off">
+            <button id="btn-join" class="btn big">Beitreten</button>
+          </div>
+          <button id="btn-local" class="btn ghost">📱 Alle an einem Gerät spielen</button>
+          <button id="btn-resume" class="btn ghost" hidden>↩︎ Letztes Spiel fortsetzen</button>
+        </div>
+        <p class="hint">Online: Erstelle ein Spiel und schick deinen Freunden den Code. Kein Account nötig.</p>
+      </section>
+
+      <section id="menu-lobby" hidden>
+        <div class="room-box">
+          <div class="room-label">Raumcode</div>
+          <div id="room-code" class="room-code">-----</div>
+          <button id="btn-copy" class="btn small">🔗 Einladungslink kopieren</button>
+        </div>
+        <div id="lobby-list" class="lobby-list"></div>
+        <div class="menu-buttons">
+          <button id="btn-add-local" class="btn ghost">＋ Weiteren Spieler an diesem Gerät</button>
+          <button id="btn-start" class="btn primary big">Spiel starten ▶</button>
+          <div id="lobby-wait" class="hint" hidden>Warte, bis der Host das Spiel startet …</div>
+          <button id="btn-leave" class="btn ghost small">Zurück</button>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- Spiel-HUD -->
+  <div id="hud" hidden>
+    <header class="topbar glass">
+      <div class="brand">BAD SEGEBERG</div>
+      <div id="room-chip" class="chip" hidden></div>
+      <div class="top-actions">
+        <button id="btn-follow" class="icon-btn" title="Kamera folgt Figur">🎥</button>
+        <button id="btn-sound" class="icon-btn" title="Ton an/aus">🔊</button>
+        <button id="btn-panel" class="icon-btn mobile-only" title="Infos">📜</button>
+        <button id="btn-rules" class="icon-btn" title="Regeln">❔</button>
+      </div>
+    </header>
+    <aside id="players" class="glass"></aside>
+    <aside id="side" class="glass">
+      <div class="tabs">
+        <button data-tab="field" class="tab active">Feld</button>
+        <button data-tab="log" class="tab">Verlauf</button>
+      </div>
+      <div id="tab-field" class="tab-body"></div>
+      <div id="tab-log" class="tab-body" hidden><ol id="log"></ol></div>
+    </aside>
+    <div id="turn-banner"></div>
+    <div id="dock" class="glass">
+      <div id="dock-status"></div>
+      <div id="dock-actions"></div>
+    </div>
+  </div>
+
+  <div id="modals"></div>
+  <div id="toasts"></div>
+  <canvas id="fx"></canvas>
+
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/controls/OrbitControls.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/environments/RoomEnvironment.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.147.0/examples/js/geometries/RoundedBoxGeometry.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script src="js/data.js"></script>
+  <script src="js/engine.js"></script>
+  <script src="js/net.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/board3d.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
