@@ -62,8 +62,7 @@
   }
 
   function showLobby() {
-    $('#menu-start').hidden = true; $('#menu-lobby').hidden = false;
-    renderLobby();
+    Motion.swap($('.menu-card'), () => { $('#menu-start').hidden = true; $('#menu-lobby').hidden = false; renderLobby(); });
   }
   function renderLobby() {
     const list = $('#lobby-list'); list.innerHTML = '';
@@ -638,8 +637,10 @@
   }
 
   // ---------- Seitenleiste ----------
+  const placeTabInd = Motion.indicator($('.tabs'), '.tab.active');
   document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
     document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
+    placeTabInd();
     $('#tab-field').hidden = t.dataset.tab !== 'field';
     $('#tab-log').hidden = t.dataset.tab !== 'log';
     $('#tab-chat').hidden = t.dataset.tab !== 'chat';
@@ -647,7 +648,10 @@
   });
   function renderSide() {
     const s = A.G; if (!s) return;
-    $('#log').innerHTML = s.log.slice(-60).map(l => `<li>${esc(l)}</li>`).join('');
+    const fresh = Math.max(0, s.log.length - (A.logSeen ?? s.log.length));
+    A.logSeen = s.log.length;
+    const lines = s.log.slice(-60);
+    $('#log').innerHTML = lines.map((l, i) => `<li${i >= lines.length - fresh ? ' class="new"' : ''}>${esc(l)}</li>`).join('');
     const idx = A.selField ?? s.players[s.cur].pos;
     const tf = $('#tab-field');
     tf.innerHTML = '';
@@ -747,7 +751,8 @@
   }
   function setDiceBadge(d) { A.lastDice = d; }
 
-  function renderDock() {
+  function renderDock() { Motion.resize($('#dock'), renderDockContent); }
+  function renderDockContent() {
     const s = A.G; if (!s) return;
     const st = $('#dock-status'), ac = $('#dock-actions');
     ac.innerHTML = '';
@@ -825,9 +830,10 @@
     const m = h(html); bg.appendChild(m);
     bg.addEventListener('pointerdown', e => { if (e.target === bg && onBg) onBg(); });
     $('#modals').appendChild(bg);
+    if (m.classList.contains('modal')) Motion.morphIn(m, $('#dock'));
     return m;
   }
-  function closeModal(m) { const bg = m.closest('.modal-bg'); if (bg) bg.remove(); }
+  function closeModal(m) { const bg = m.closest('.modal-bg'); if (bg) Motion.morphOut(bg); }
 
   // Kontext-Modal folgt dem Spielzustand (Kauf, Versteigerung, Handel, Sieg)
   let ctxKey = null, ctxEl = null;
@@ -1042,6 +1048,10 @@
   const applySpeed = () => { Board3D.setSpeed(A.speed); speedBtn.classList.toggle('off', A.speed === 1); };
   speedBtn.onclick = () => { A.speed = A.speed === 1 ? 2 : 1; store.set('seg-speed', A.speed); applySpeed(); toast(A.speed > 1 ? '⏩ Schnelle Animationen' : '▶️ Normale Animationen'); };
   $('#btn-panel').onclick = () => $('#side').classList.toggle('open');
+  Motion.sheet($('#side'), $('#side .tabs'), {
+    isActive: () => innerWidth <= 860 && $('#side').classList.contains('open'),
+    onChange: open => $('#side').classList.toggle('open', open),
+  });
 
   // Reaktionen
   const react = h(`<button class="icon-btn" title="Reaktion">😀</button>`);

@@ -520,7 +520,7 @@
     renderer.setSize(container.clientWidth, container.clientHeight);
     renderer.outputEncoding = THREE.sRGBEncoding;
     renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    renderer.toneMappingExposure = 0.92;
+    renderer.toneMappingExposure = 0.85;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
@@ -539,14 +539,17 @@
     controls.target.set(0, 0, 0);
     controls.addEventListener('start', () => { idle = false; });
 
-    const hemi = new THREE.HemisphereLight(0xdfe8ff, 0x302418, 0.3); scene.add(hemi);
-    const sun = new THREE.DirectionalLight(0xfff1dc, 1.5);
-    sun.position.set(8, 16, 6); sun.castShadow = true;
+    // warmes Hauptlicht schräg von oben, Lampenkegel über dem Brett, kühle Kante von hinten
+    const hemi = new THREE.HemisphereLight(0xdfe8ff, 0x302418, 0.18); scene.add(hemi);
+    const sun = new THREE.DirectionalLight(0xffe4bf, 1.1);
+    sun.position.set(10, 14, 5); sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     Object.assign(sun.shadow.camera, { left: -10, right: 10, top: 10, bottom: -10, near: 1, far: 40 });
     sun.shadow.bias = -0.0004; sun.shadow.radius = 4;
     scene.add(sun);
-    const rim = new THREE.DirectionalLight(0x7aa8ff, 0.5); rim.position.set(-10, 6, -8); scene.add(rim);
+    const lamp = new THREE.SpotLight(0xffd9a8, 0.9, 0, 0.6, 0.9, 1);
+    lamp.position.set(0, 20, 0); lamp.target.position.set(0, 0, 0); scene.add(lamp, lamp.target);
+    const rim = new THREE.DirectionalLight(0x7aa8ff, 0.45); rim.position.set(-10, 6, -8); scene.add(rim);
 
     // Tisch aus Holz
     const table = new THREE.Mesh(new THREE.CircleGeometry(40, 64), new THREE.MeshStandardMaterial({ map: woodTexture(2048, '#2a1a10', '#3d2616', 18, 6), roughness: 0.7, envMapIntensity: 0.25 }));
@@ -557,7 +560,7 @@
       new THREE.MeshStandardMaterial({ map: woodTexture(1024, '#5a3a22', '#7a5130', 1, 1), roughness: 0.4, metalness: 0.05, envMapIntensity: 0.6 }));
     frame.receiveShadow = true; frame.castShadow = true; scene.add(frame);
     const tex = makeBoardTexture();
-    boardTop = new THREE.Mesh(new THREE.PlaneGeometry(S, S), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.62, metalness: 0.0, envMapIntensity: 0.35 }));
+    boardTop = new THREE.Mesh(new THREE.PlaneGeometry(S, S), new THREE.MeshStandardMaterial({ map: tex, roughness: 0.82, metalness: 0.0, envMapIntensity: 0.22 }));
     boardTop.rotation.x = -Math.PI / 2; boardTop.position.y = TOP + 0.002; boardTop.receiveShadow = true; scene.add(boardTop);
 
     // Kartenstapel
