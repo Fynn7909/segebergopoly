@@ -10,15 +10,20 @@
   }
   const fmt = n => n.toLocaleString('de-DE') + ' €';
 
-  function newGame(players) {
+  const DEFAULT_OPTS = { startMoney: START_MONEY, freeParking: false, doubleGo: false, auctions: true, maxRounds: 0 };
+
+  function newGame(players, opts = {}) {
+    opts = { ...DEFAULT_OPTS, ...opts };
     const props = {};
     BOARD.forEach(f => { if (f.price) props[f.idx] = { owner: null, houses: 0, mortgaged: false }; });
     return {
       phase: 'playing',
       players: players.map(p => ({
         id: p.id, name: p.name, color: p.color, token: p.token,
-        money: START_MONEY, pos: 0, jail: false, jailTurns: 0, jailCards: [], bankrupt: false, debts: [],
+        money: opts.startMoney, pos: 0, jail: false, jailTurns: 0, jailCards: [], bankrupt: false, debts: [], bot: !!p.bot,
+        stats: { rentIn: 0, rentOut: 0, bought: 0, built: 0, passGo: 0 },
       })),
+      opts, pot: 0, round: 1,
       props, cur: 0, step: 'roll', dice: [0, 0], doubles: 0, extra: false,
       pendingBuy: null, auction: null, trade: null, card: null,
       decks: { chance: shuffled(CHANCE.length), community: shuffled(COMMUNITY.length) },
@@ -73,12 +78,16 @@
     return { ev, log, money };
   }
 
+  function bankReceive(s, amount, why) {
+    if (s.opts.freeParking && why !== 'Hypothekenzinsen') s.pot += amount;
+  }
+
   function charge(s, c, p, amount, toPid, why) {
     if (amount <= 0) return;
     const to = toPid ? P(s, toPid) : null;
     if (p.money >= amount) {
       c.money(p, -amount, why);
-      if (to) c.money(to, amount, why);
+      if (to) c.money(to, amount, why); else bankReceive(s, amount, why);
     } else {
       p.debts.push({ amount, to: toPid || null, why });
       c.ev.push({ t: 'debt', pid: p.id, amount });
@@ -90,7 +99,7 @@
     while (p.debts.length && p.money >= p.debts[0].amount) {
       const d = p.debts.shift();
       c.money(p, -d.amount, d.why);
-      if (d.to) c.money(P(s, d.to), d.amount, d.why);
+      if (d.to) c.money(P(s, d.to), d.amount, d.why); else bankReceive(s, d.amount, d.why);
       c.log(`${p.name} begleicht ${fmt(d.amount)} (${d.why}).`);
     }
   }
@@ -104,7 +113,12 @@
     const passedGo = n > 0 && p.pos + n >= 40;
     p.pos = pos;
     c.ev.push({ t: 'move', pid: p.id, path });
-    if (passedGo) { c.money(p, GO_MONEY, 'LOS'); c.log(`${p.name} zieht über LOS und kassiert ${fmt(GO_MONEY)}.`); }
+    if (passedGo) {
+      const amt = s.opts.doubleGo && pos === 0 ? GO_MONEY * 2 : GO_MONEY;
+      p.stats.passGo++;
+      c.money(p, amt, 'LOS');
+      c.log(`${p.name} ${amt > GO_MONEY ? 'landet genau auf LOS und kassiert doppelt' : 'zieht über LOS und kassiert'}: ${fmt(amt)}.`);
+    }
   }
   function moveTo(s, c, p, target) {
     const n = (target - p.pos + 40) % 40;
@@ -133,6 +147,7 @@
       const owner = P(s, pr.owner);
       c.log(`${p.name} zahlt ${fmt(r)} Miete an ${owner.name} (${f.name}).`);
       c.ev.push({ t: 'rent', pid: p.id, to: owner.id, amount: r, idx: f.idx });
+      p.stats.rentOut += r; owner.stats.rentIn += r;
       charge(s, c, p, r, owner.id, `Miete ${f.name}`);
       return;
     }
@@ -142,6 +157,13 @@
         charge(s, c, p, f.amount, null, f.name);
         break;
       case 'gotojail': goJail(s, c, p); break;
+      case 'parking':
+        if (s.pot > 0) {
+          c.log(`🅿️ ${p.name} räumt den Frei-Parken-Topf ab: ${fmt(s.pot)}!`);
+          c.ev.push({ t: 'pot', pid: p.id, amount: s.pot });
+          c.money(p, s.pot, 'Frei Parken'); s.pot = 0;
+        }
+        break;
       case 'chance': drawCard(s, c, p, 'chance', roll); break;
       case 'community': drawCard(s, c, p, 'community', roll); break;
     }
@@ -194,13 +216,19 @@
   function nextTurn(s, c) {
     s.doubles = 0; s.extra = false; s.pendingBuy = null; s.card = null;
     if (active(s).length <= 1) return endGame(s, c);
+    const before = s.cur;
     do { s.cur = (s.cur + 1) % s.players.length; } while (curP(s).bankrupt);
+    if (s.cur <= before) {
+      s.round++;
+      if (s.opts.maxRounds && s.round > s.opts.maxRounds) { c.log(`⏱️ Rundenlimit erreicht – das größte Vermögen gewinnt.`); return endGame(s, c); }
+      c.ev.push({ t: 'round', round: s.round });
+    }
     s.step = 'roll';
     c.ev.push({ t: 'turn', pid: curP(s).id });
   }
 
   function endGame(s, c) {
-    const w = active(s)[0];
+    const w = active(s).sort((a, b) => netWorth(s, b.id) - netWorth(s, a.id))[0];
     s.phase = 'over'; s.winner = w ? w.id : null; s.step = 'over';
     if (w) { c.ev.push({ t: 'win', pid: w.id }); c.log(`🏆 ${w.name} gewinnt Bad Segeberg!`); }
   }
@@ -261,6 +289,7 @@
       const w = P(s, a.bidder);
       c.money(w, -a.high, 'Versteigerung');
       s.props[a.idx].owner = w.id;
+      w.stats.bought++;
       c.ev.push({ t: 'buy', pid: w.id, idx: a.idx });
       c.log(`${w.name} ersteigert ${BOARD[a.idx].name} für ${fmt(a.high)}.`);
     } else c.log(`Niemand wollte ${BOARD[a.idx].name}.`);
@@ -294,7 +323,16 @@
   }
 
   // ---------- Hauptfunktion ----------
+  // Ältere Spielstände ergänzen
+  function migrate(s) {
+    if (!s.opts) s.opts = { ...DEFAULT_OPTS };
+    if (s.pot == null) s.pot = 0;
+    if (s.round == null) s.round = 1;
+    s.players.forEach(p => { if (!p.stats) p.stats = { rentIn: 0, rentOut: 0, bought: 0, built: 0, passGo: 0 }; });
+  }
+
   function act(s, pid, a) {
+    migrate(s);
     const c = ctx(s);
     const err = e => ({ ok: false, err: e, events: [] });
     if (s.phase !== 'playing') return err('Spiel läuft nicht');
@@ -343,7 +381,7 @@
       case 'jailPay': {
         if (!isCur || s.step !== 'roll' || !p.jail) return err('Nicht möglich');
         if (p.money < JAIL_FINE) return err('Nicht genug Geld');
-        c.money(p, -JAIL_FINE, 'Kaution');
+        c.money(p, -JAIL_FINE, 'Kaution'); bankReceive(s, JAIL_FINE, 'Kaution');
         p.jail = false; p.jailTurns = 0;
         c.ev.push({ t: 'free', pid });
         c.log(`${p.name} zahlt ${fmt(JAIL_FINE)} Kaution und ist frei.`);
@@ -365,6 +403,7 @@
         if (p.money < bf.price) return err('Nicht genug Geld – versteigern oder Hypothek aufnehmen');
         c.money(p, -bf.price, 'Kauf');
         s.props[bf.idx].owner = pid;
+        p.stats.bought++;
         c.ev.push({ t: 'buy', pid, idx: bf.idx });
         c.log(`${p.name} kauft ${bf.name} für ${fmt(bf.price)}.`);
         s.pendingBuy = null; s.step = 'action';
@@ -373,6 +412,11 @@
       }
       case 'decline': {
         if (!isCur || s.step !== 'buy') return err('Nicht möglich');
+        if (!s.opts.auctions) {
+          c.log(`${p.name} kauft ${BOARD[s.pendingBuy].name} nicht.`);
+          s.pendingBuy = null; s.step = 'action'; finishLanding(s);
+          break;
+        }
         startAuction(s, c, s.pendingBuy);
         break;
       }
@@ -413,6 +457,7 @@
         c.money(p, -f.house, 'Bau');
         if (pr.houses === 4) { s.bankHotels--; s.bankHouses += 4; } else s.bankHouses--;
         pr.houses++;
+        p.stats.built++;
         c.ev.push({ t: 'build', idx: a.idx, houses: pr.houses });
         c.log(`${p.name} baut ${pr.houses === 5 ? 'ein Hotel' : 'ein Haus'} auf ${f.name}.`);
         break;
@@ -487,7 +532,7 @@
         if (a.type !== 'acceptTrade') { c.log(a.type === 'rejectTrade' ? `${p.name} lehnt den Handel ab.` : 'Handel zurückgezogen.'); c.ev.push({ t: 'tradeEnd', ok: false }); break; }
         const A = P(s, t.from), Bp = P(s, t.to);
         const e2 = validOffer(s, A.id, t.give) || validOffer(s, Bp.id, t.get);
-        if (e2) return err(e2);
+        if (e2) { c.log(`Handel geplatzt: ${e2}.`); c.ev.push({ t: 'tradeEnd', ok: false }); break; }
         if (t.give.money) { c.money(A, -t.give.money, 'Handel'); c.money(Bp, t.give.money, 'Handel'); }
         if (t.get.money) { c.money(Bp, -t.get.money, 'Handel'); c.money(A, t.get.money, 'Handel'); }
         for (let i = 0; i < t.give.cards; i++) Bp.jailCards.push(A.jailCards.shift());
@@ -514,5 +559,7 @@
     return { ok: true, events: c.ev };
   }
 
-  window.Engine = { newGame, act, kick, rentFor, ownsGroup, netWorth, countOwned, groupHasBuildings, fmt };
+  function setBot(s, pid, on) { const p = P(s, pid); if (p) p.bot = on; }
+
+  window.Engine = { newGame, act, kick, setBot, migrate, DEFAULT_OPTS, rentFor, ownsGroup, netWorth, countOwned, groupHasBuildings, fmt };
 })();

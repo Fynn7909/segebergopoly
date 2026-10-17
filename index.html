@@ -46,8 +46,21 @@
           <button id="btn-copy" class="btn small">🔗 Einladungslink kopieren</button>
         </div>
         <div id="lobby-list" class="lobby-list"></div>
+        <div class="lobby-add">
+          <button id="btn-add-local" class="btn ghost small">＋ Spieler an diesem Gerät</button>
+          <button id="btn-add-bot" class="btn ghost small">🤖 Computer-Gegner</button>
+        </div>
+        <details id="settings" class="settings" open>
+          <summary>⚙️ Spielregeln &amp; Einstellungen</summary>
+          <div class="set-grid">
+            <label>Startgeld<select data-opt="startMoney"><option value="1000">1.000 €</option><option value="1500" selected>1.500 € (Standard)</option><option value="2000">2.000 €</option><option value="3000">3.000 €</option></select></label>
+            <label>Spieldauer<select data-opt="maxRounds"><option value="0" selected>Bis zur Pleite</option><option value="15">15 Runden</option><option value="25">25 Runden</option><option value="40">40 Runden</option></select></label>
+            <label class="toggle"><input type="checkbox" data-opt="freeParking"><span></span>Frei-Parken-Topf<small>Steuern &amp; Strafen landen in der Mitte</small></label>
+            <label class="toggle"><input type="checkbox" data-opt="doubleGo"><span></span>Doppelt auf LOS<small>400 €, wenn du genau auf LOS landest</small></label>
+            <label class="toggle"><input type="checkbox" data-opt="auctions" checked><span></span>Versteigerungen<small>Nicht gekaufte Felder werden versteigert</small></label>
+          </div>
+        </details>
         <div class="menu-buttons">
-          <button id="btn-add-local" class="btn ghost">＋ Weiteren Spieler an diesem Gerät</button>
           <button id="btn-start" class="btn primary big">Spiel starten ▶</button>
           <div id="lobby-wait" class="hint" hidden>Warte, bis der Host das Spiel startet …</div>
           <button id="btn-leave" class="btn ghost small">Zurück</button>
@@ -61,6 +74,8 @@
     <header class="topbar glass">
       <div class="brand">BAD SEGEBERG</div>
       <div id="room-chip" class="chip" hidden></div>
+      <div id="round-chip" class="chip soft" hidden></div>
+      <div id="pot-chip" class="chip pot" hidden></div>
       <div class="top-actions">
         <button id="btn-follow" class="icon-btn" title="Kamera folgt Figur">🎥</button>
         <button id="btn-sound" class="icon-btn" title="Ton an/aus">🔊</button>
@@ -73,9 +88,11 @@
       <div class="tabs">
         <button data-tab="field" class="tab active">Feld</button>
         <button data-tab="log" class="tab">Verlauf</button>
+        <button data-tab="chat" class="tab" id="tab-chat-btn">Chat <b id="chat-badge" hidden></b></button>
       </div>
       <div id="tab-field" class="tab-body"></div>
       <div id="tab-log" class="tab-body" hidden><ol id="log"></ol></div>
+      <div id="tab-chat" class="tab-body chat" hidden><ol id="chat"></ol><form id="chat-form"><input id="chat-in" maxlength="140" placeholder="Nachricht …" autocomplete="off"><button class="btn small primary">➤</button></form></div>
     </aside>
     <div id="turn-banner"></div>
     <div id="dock" class="glass">
@@ -95,6 +112,7 @@
   <script src="https://cdn.jsdelivr.net/npm/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <script src="js/data.js"></script>
   <script src="js/engine.js"></script>
+  <script src="js/bot.js"></script>
   <script src="js/net.js"></script>
   <script src="js/audio.js"></script>
   <script src="js/board3d.js"></script>

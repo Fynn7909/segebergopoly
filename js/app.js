@@ -21,6 +21,8 @@
     role: null, lobby: [], my: new Set(), master: null, G: null, code: null,
     host: null, client: null, started: false,
     busy: false, queue: [], selField: null, display: {}, manageFor: null,
+    opts: { ...Engine.DEFAULT_OPTS }, chat: [], unread: 0, botTimer: null,
+    speed: store.get('seg-speed') || 1,
   };
   window.App = A;
   A.debugAct = (pid, a) => runAction(pid, a, null);
@@ -72,7 +74,7 @@
       const el = h(`<div class="lobby-item">
         <div class="tok" style="background:${p.color}">${emo(p.token)}</div>
         <div class="nm">${esc(p.name)}</div>
-        ${A.my.has(p.id) ? '<span class="tag you">Du</span>' : ''}
+        ${A.my.has(p.id) ? '<span class="tag you">Du</span>' : ''}${p.bot ? '<span class="tag">🤖 Computer</span>' : ''}
         ${!p.online ? '<span class="tag off">offline</span>' : ''}
         ${isHost && p.id !== cid && !A.started ? '<button class="btn small ghost">✕</button>' : ''}
       </div>`);
@@ -84,8 +86,31 @@
     $('#btn-start').disabled = A.lobby.length < 2;
     $('#btn-start').textContent = A.lobby.length < 2 ? 'Mindestens 2 Spieler …' : `Spiel starten mit ${A.lobby.length} Spielern ▶`;
     $('#btn-add-local').hidden = !isHost || A.lobby.length >= 6;
+    $('#btn-add-bot').hidden = !isHost || A.lobby.length >= 6;
     $('#lobby-wait').hidden = isHost;
+    $('#settings').classList.toggle('ro', !isHost);
+    document.querySelectorAll('[data-opt]').forEach(el => {
+      const v = A.opts[el.dataset.opt];
+      if (el.type === 'checkbox') el.checked = !!v; else el.value = String(v);
+    });
   }
+  document.querySelectorAll('[data-opt]').forEach(el => el.addEventListener('change', () => {
+    const k = el.dataset.opt;
+    A.opts[k] = el.type === 'checkbox' ? el.checked : +el.value;
+    store.set('seg-opts', A.opts);
+    Sfx.click();
+    hostLobbyChanged();
+  }));
+  Object.assign(A.opts, store.get('seg-opts') || {});
+
+  $('#btn-add-bot').onclick = () => {
+    if (A.lobby.length >= 6) return;
+    const used = A.lobby.map(p => p.name);
+    const name = Bot.NAMES.find(n => !used.includes(n)) || 'Bot ' + A.lobby.length;
+    A.lobby.push({ id: rid('b'), name, token: freeToken(TOKENS[A.lobby.length % 6].id), color: freeColor(), local: true, online: true, bot: true });
+    Sfx.turn();
+    hostLobbyChanged();
+  };
 
   $('#btn-local').onclick = () => {
     Sfx.unlock();
@@ -111,12 +136,27 @@
       onReady(api) { A.host = api; A.code = api.code; store.set('seg-lastcode', api.code); renderLobby(); updateRoomChip(); saveGame(); },
       onConnect() {},
       onMessage: hostOnMessage,
-      onDisconnect(connId) {
-        A.lobby.forEach(p => { if (p.conn === connId) { p.conn = null; p.online = false; toast(`📴 ${p.name} hat die Verbindung verloren`); } });
-        hostLobbyChanged();
-      },
+      onDisconnect: hostDisconnect,
       onError(e) { toast('Netzwerkfehler: ' + (e.type || e.message || e), 'err'); },
     }, 0, fixedCode || null);
+  }
+  // Herzschlag: Verbindungen, die 15 s nichts senden, gelten als getrennt
+  const lastSeen = {};
+  setInterval(() => {
+    if (A.role === 'host') {
+      const now = Date.now();
+      A.lobby.forEach(p => { if (p.conn && now - (lastSeen[p.conn] || now) > 25000) hostDisconnect(p.conn); });
+      if (A.host) A.host.broadcast({ t: 'ping' });
+    } else if (A.role === 'client' && A.client) {
+      A.client.send({ t: 'ping' });
+      if (A.lastPong && Date.now() - A.lastPong > 25000) { A.lastPong = 0; connectionLost(); }
+    }
+  }, 4000);
+  function hostDisconnect(connId) {
+    {
+        A.lobby.forEach(p => { if (p.conn === connId) { p.conn = null; p.online = false; toast(`📴 ${p.name} hat die Verbindung verloren`); if (A.started) takeoverLater(p); } });
+        hostLobbyChanged();
+    }
   }
 
   $('#btn-join').onclick = () => {
@@ -192,7 +232,7 @@
   $('#btn-start').onclick = () => {
     if (A.lobby.length < 2) return;
     const order = [...A.lobby].sort(() => Math.random() - 0.5);
-    A.master = Engine.newGame(order);
+    A.master = Engine.newGame(order, A.opts);
     A.started = true;
     const ev = [{ t: 'start' }, { t: 'turn', pid: A.master.players[0].id }];
     publish(ev);
@@ -208,33 +248,40 @@
       Sfx.unlock();
       A.role = save.role; A.lobby = save.lobby.map(p => ({ ...p, conn: null, online: p.local }));
       A.my = new Set(save.lobby.filter(p => p.local).map(p => p.id));
-      A.master = save.master; A.started = true;
+      A.master = save.master; A.started = true; Engine.migrate(A.master);
+      if (A.role === 'host') A.master.players.forEach(p => { const lp = A.lobby.find(x => x.id === p.id); if (lp && !lp.local && !lp.bot) p.bot = true; });
       if (A.role === 'host') startHosting(save.code);
       publish([{ t: 'start' }]);
     };
   }
   function saveGame() {
     if (A.role === 'client' || !A.master) return;
-    store.set('seg-save', { role: A.role, code: A.code, lobby: A.lobby.map(({ conn, ...r }) => r), master: A.master, ts: Date.now() });
+    store.set('seg-save', { role: A.role, code: A.code, lobby: lobbyPublic(), master: A.master, ts: Date.now() });
   }
 
   // ======================================================================
   // Netzwerk
   // ======================================================================
-  function lobbyPublic() { return A.lobby.map(({ conn, ...r }) => r); }
+  function lobbyPublic() { return A.lobby.map(({ conn, takeover, ...r }) => r); }
   function hostLobbyChanged() {
-    if (A.host) A.host.broadcast({ t: 'lobby', lobby: lobbyPublic(), code: A.code });
+    if (A.host) A.host.broadcast({ t: 'lobby', lobby: lobbyPublic(), code: A.code, opts: A.opts });
     if (!A.started) renderLobby(); else renderPlayers();
   }
 
   function hostOnMessage(connId, msg) {
     if (!msg || typeof msg !== 'object') return;
+    lastSeen[connId] = Date.now();
+    if (msg.t !== 'hello' && !A.lobby.some(x => x.conn === connId)) { A.host.send(connId, { t: 'rehello' }); return; }
+    if (msg.t === 'ping') return;
     if (msg.t === 'hello') {
       let p = A.lobby.find(x => x.id === msg.cid);
       if (p) {
         p.conn = connId; p.online = true;
         if (!A.started) { p.name = String(msg.name || p.name).slice(0, 16); p.token = freeToken(msg.token, p.id); }
         toast(`📶 ${p.name} ist ${A.started ? 'wieder ' : ''}da`);
+        clearTimeout(p.takeover);
+        const mp = A.master && A.master.players.find(x => x.id === p.id);
+        if (mp && mp.bot && !p.bot) { Engine.setBot(A.master, p.id, false); A.master.log.push(`🎮 ${p.name} spielt wieder selbst.`); publish([]); }
       } else if (A.started) {
         A.host.send(connId, { t: 'err', msg: 'Das Spiel läuft schon – du schaust zu.' });
       } else if (A.lobby.length >= 6) {
@@ -248,12 +295,21 @@
       A.host.send(connId, { t: 'welcome', you: p ? [p.id] : [] });
       hostLobbyChanged();
       if (A.started) A.host.send(connId, { t: 'state', s: A.master, ev: [] });
+      A.chat.slice(-30).forEach(m => A.host.send(connId, m));
       return;
     }
     if (msg.t === 'act') {
       const p = A.lobby.find(x => x.id === msg.pid && x.conn === connId);
       if (!p || !msg.a || msg.a.type === 'kick') return;
       runAction(msg.pid, msg.a, connId);
+      return;
+    }
+    if (msg.t === 'chat') {
+      const p = A.lobby.find(x => x.id === msg.pid && x.conn === connId);
+      if (!p) return;
+      const out = { t: 'chat', pid: p.id, name: p.name, color: p.color, text: String(msg.text || '').slice(0, 140) };
+      if (!out.text.trim()) return;
+      A.host.broadcast(out); showChat(out);
       return;
     }
     if (msg.t === 'react') {
@@ -265,9 +321,12 @@
   }
 
   function clientOnMessage(msg) {
+    A.lastPong = Date.now();
     switch (msg.t) {
       case 'welcome': A.my = new Set(msg.you); break;
-      case 'lobby': A.lobby = msg.lobby; A.code = msg.code; if (!A.started) renderLobby(); else renderPlayers(); break;
+      case 'lobby': A.lobby = msg.lobby; A.code = msg.code; if (msg.opts) A.opts = msg.opts; if (!A.started) renderLobby(); else renderPlayers(); break;
+      case 'chat': showChat(msg); break;
+      case 'rehello': A.client.send({ t: 'hello', cid, name: myName(), token: myToken }); break;
       case 'state': enqueue(msg.s, msg.ev || []); break;
       case 'err': toast(msg.msg, 'err'); Sfx.error(); break;
       case 'react': showReaction(msg); break;
@@ -284,11 +343,45 @@
   function runAction(pid, a, connId) {
     const res = a.type === 'kick' ? Engine.kick(A.master, a.pid) : Engine.act(A.master, pid, a);
     if (!res.ok) {
+      if (connId === 'bot') return res;
       if (connId) A.host.send(connId, { t: 'err', msg: res.err });
       else { toast(res.err, 'err'); Sfx.error(); }
-      return;
+      return res;
     }
     publish(res.events);
+    return res;
+  }
+
+  // ---------- Computer-Gegner (läuft nur beim Host) ----------
+  function scheduleBot() {
+    if (A.role === 'client' || !A.master || A.master.phase !== 'playing') return;
+    clearTimeout(A.botTimer);
+    A.botTimer = setTimeout(botTick, A.speed > 1 ? 280 : 750);
+  }
+  function botTick() {
+    if (A.busy || A.queue.length || !A.master || A.master.phase !== 'playing') return;
+    const s = A.master;
+    for (const p of s.players) {
+      if (!p.bot || p.bankrupt) continue;
+      const a = Bot.decide(s, p.id);
+      if (!a) continue;
+      const res = runAction(p.id, a, 'bot');
+      if (!res.ok && s.step === 'end' && s.players[s.cur].id === p.id) runAction(p.id, { type: 'endTurn' }, 'bot');
+      else if (!res.ok) console.warn('Bot-Aktion fehlgeschlagen', a, res.err);
+      return;
+    }
+  }
+  function takeoverLater(p) {
+    clearTimeout(p.takeover);
+    p.takeover = setTimeout(() => {
+      if (p.online || !A.master || A.master.phase !== 'playing') return;
+      const mp = A.master.players.find(x => x.id === p.id);
+      if (!mp || mp.bankrupt || mp.bot) return;
+      Engine.setBot(A.master, p.id, true);
+      A.master.log.push(`🤖 Der Computer spielt für ${p.name}, bis die Verbindung wieder steht.`);
+      publish([]);
+      toast(`🤖 Computer übernimmt für ${p.name}`);
+    }, 20000);
   }
 
   function publish(ev) {
@@ -298,6 +391,35 @@
     saveGame();
     if (snap.phase === 'over') store.del('seg-save');
   }
+
+  function sendChat(text) {
+    text = text.trim().slice(0, 140);
+    const pid = [...A.my][0];
+    if (!text || !pid) return;
+    if (A.role === 'client') { A.client.send({ t: 'chat', pid, text }); return; }
+    const lp = A.lobby.find(x => x.id === pid) || {};
+    const out = { t: 'chat', pid, name: lp.name, color: lp.color, text };
+    if (A.host) A.host.broadcast(out);
+    showChat(out);
+  }
+  function showChat(m) {
+    A.chat.push(m); if (A.chat.length > 60) A.chat.shift();
+    const li = h(`<li><b style="color:${esc(m.color || '#fff')}">${esc(m.name || '?')}</b>${esc(m.text)}</li>`);
+    const list = $('#chat'); list.appendChild(li); list.scrollTop = list.scrollHeight;
+    if ($('#tab-chat').hidden) { A.unread++; $('#chat-badge').hidden = false; $('#chat-badge').textContent = A.unread; }
+    if (!A.my.has(m.pid)) Sfx.bid();
+    // Sprechblase an der Spielerkarte
+    const card = document.querySelector(`.pcard[data-pid="${m.pid}"]`);
+    if (card) {
+      const r = card.getBoundingClientRect();
+      const b = h(`<div class="bubble">${esc(m.text)}</div>`);
+      b.style.left = Math.min(innerWidth - 230, r.right + 8) + 'px'; b.style.top = r.top + 8 + 'px';
+      if (innerWidth <= 860) { b.style.left = Math.max(8, r.left) + 'px'; b.style.top = r.bottom + 8 + 'px'; }
+      document.body.appendChild(b);
+      setTimeout(() => { b.classList.add('out'); setTimeout(() => b.remove(), 400); }, 3500);
+    }
+  }
+  $('#chat-form').addEventListener('submit', e => { e.preventDefault(); sendChat($('#chat-in').value); $('#chat-in').value = ''; });
 
   function sendReaction(e) {
     const pid = [...A.my][0];
@@ -328,6 +450,7 @@
     }
     A.busy = false; renderDock(); renderSide();
     if (A.manageFor) renderManage();
+    scheduleBot();
   }
 
   const pname = (s, id) => { const p = s.players.find(x => x.id === id); return p ? p.name : '?'; };
@@ -361,18 +484,18 @@
           await Board3D.jumpToJail(e.pid, s);
           break;
         case 'free': toast(`🔓 ${pname(s, e.pid)} ist wieder frei`); Sfx.cash(); break;
-        case 'card': await showCard(e, s); break;
+        case 'card': Sfx.card(); await Board3D.drawCard(e.deck); await showCard(e, s); break;
         case 'money': {
           floatMoney(e.pid, e.d);
           const now = performance.now();
           if (now - lastSound > 250) { e.d > 0 ? Sfx.cash() : Sfx.pay(); lastSound = now; }
-          if (e.why === 'LOS') Board3D.burst(Board3D.tokenPos(e.pid) || Board3D.fieldWorld(0), 0xffd23f, 50);
+          if (e.why === 'LOS') Board3D.coinShower(Board3D.tokenPos(e.pid) || Board3D.fieldWorld(0), e.d > 200 ? 30 : 14);
           break;
         }
         case 'rent':
           toast(`💸 ${pname(s, e.pid)} zahlt ${fmt(e.amount)} Miete an ${pname(s, e.to)}`);
           coinFly(e.pid, e.to);
-          await wait(450);
+          await Board3D.coinFly(e.pid, e.to, Math.min(12, 3 + Math.floor(e.amount / 50)));
           break;
         case 'buy':
           Sfx.buy();
@@ -384,6 +507,13 @@
         case 'build': Sfx.build(); Board3D.syncProps(s, e.idx); await wait(250); break;
         case 'mortgage': Board3D.syncProps(s); Sfx.click(); break;
         case 'auction': Sfx.hammer(); break;
+        case 'pot':
+          Sfx.win(); confetti(120);
+          toast(`🅿️ ${pname(s, e.pid)} räumt den Topf ab: ${fmt(e.amount)}!`);
+          Board3D.coinShower(Board3D.fieldWorld(20), 40);
+          await wait(600);
+          break;
+        case 'round': if (s.opts && s.opts.maxRounds && s.opts.maxRounds - e.round < 3) toast(`⏱️ Runde ${e.round} von ${s.opts.maxRounds}`); break;
         case 'bid': Sfx.bid(); break;
         case 'pass': break;
         case 'turn': {
@@ -418,6 +548,7 @@
     updateRoomChip();
   }
   function updateRoomChip() {
+    $('#tab-chat-btn').hidden = A.role === 'local';
     const chip = $('#room-chip');
     if (A.role === 'local' || !A.code) { chip.hidden = true; return; }
     chip.hidden = false; chip.textContent = A.code;
@@ -427,6 +558,12 @@
 
   function applyView(s) {
     A.G = s;
+    const rc = $('#round-chip'), pc = $('#pot-chip');
+    rc.hidden = false; rc.textContent = s.opts && s.opts.maxRounds ? `Runde ${Math.min(s.round, s.opts.maxRounds)}/${s.opts.maxRounds}` : `Runde ${s.round || 1}`;
+    pc.hidden = !(s.opts && s.opts.freeParking);
+    const potTxt = `🅿️ ${fmt(s.pot || 0)}`;
+    if (pc.textContent !== potTxt) { pc.textContent = potTxt; pc.classList.remove('bump'); void pc.offsetWidth; pc.classList.add('bump'); }
+    pc.title = 'Frei-Parken-Topf';
     Board3D.syncTokens(s);
     Board3D.syncProps(s);
     if (s.players[s.cur]) Board3D.setCurrent(s.players[s.cur].id);
@@ -456,6 +593,7 @@
       card.classList.toggle('bankrupt', p.bankrupt);
       card.querySelector('.n').textContent = p.name;
       card.querySelector('.tags').innerHTML = (A.my.has(p.id) && A.role !== 'local' ? '<span class="tag you">Du</span>' : '') +
+        (p.bot ? '<span title="Computer" style="font-size:13px">🤖</span>' : '') +
         (A.role !== 'local' && !online ? '<span class="dot off" title="offline"></span>' : '');
       const meta = [];
       if (p.jail) meta.push('🔒 Gefängnis');
@@ -473,6 +611,9 @@
         return `<i title="${esc(f.name)}" class="${s.props[i].mortgaged ? 'm' : ''}" style="background:${col}"></i>`;
       }).join('');
       animateMoney(p.id, p.money, card.querySelector('.pmoney'));
+      let wEl = card.querySelector('.pworth');
+      if (!wEl) { wEl = h('<div class="pworth"></div>'); card.querySelector('.pmoney').after(wEl); }
+      wEl.textContent = p.bankrupt ? '' : `Vermögen ${fmt(Engine.netWorth(s, p.id))}`;
     });
   }
   function animateMoney(pid, target, el) {
@@ -501,6 +642,8 @@
     document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
     $('#tab-field').hidden = t.dataset.tab !== 'field';
     $('#tab-log').hidden = t.dataset.tab !== 'log';
+    $('#tab-chat').hidden = t.dataset.tab !== 'chat';
+    if (t.dataset.tab === 'chat') { A.unread = 0; $('#chat-badge').hidden = true; setTimeout(() => $('#chat-in').focus(), 50); }
   });
   function renderSide() {
     const s = A.G; if (!s) return;
@@ -750,8 +893,13 @@
 
   function winModal(s) {
     const w = s.players.find(p => p.id === s.winner);
-    const m = modal(`<div class="modal glass"><div class="win-title">${w ? esc(w.name) : '–'}</div>
-      <p style="text-align:center;font-size:18px">${w ? emo(w.token) + ' gewinnt Bad Segeberg mit ' + fmt(w.money) + '!' : 'Spiel vorbei.'}</p>
+    const ranked = [...s.players].sort((a, b) => (a.bankrupt - b.bankrupt) || Engine.netWorth(s, b.id) - Engine.netWorth(s, a.id));
+    const st = p => p.stats || { rentIn: 0, rentOut: 0, bought: 0, built: 0 };
+    const m = modal(`<div class="modal glass wide"><div style="text-align:center;font-size:54px;animation:pop .6s var(--ease) both">🏆</div><div class="win-title">${w ? esc(w.name) : '–'}</div>
+      <p style="text-align:center;font-size:17px;margin:4px 0 0">${w ? emo(w.token) + ' gewinnt Bad Segeberg mit einem Vermögen von ' + fmt(Engine.netWorth(s, w.id)) + '!' : 'Spiel vorbei.'}</p>
+      <table class="rank"><tr><th>Spieler</th><th>Vermögen</th><th>Miete +</th><th>Miete −</th><th>Gekauft</th><th>Gebaut</th></tr>
+      ${ranked.map((p, i) => `<tr class="${i === 0 ? 'first' : ''}"><td>${i + 1}. ${emo(p.token)} ${esc(p.name)}${p.bankrupt ? ' 💀' : ''}</td><td>${p.bankrupt ? '–' : fmt(Engine.netWorth(s, p.id))}</td><td>${fmt(st(p).rentIn)}</td><td>${fmt(st(p).rentOut)}</td><td>${st(p).bought}</td><td>${st(p).built}</td></tr>`).join('')}</table>
+      <p class="hint">${s.round || 1} Runden gespielt</p>
       <div class="row"><button class="btn primary big" data-n>Neues Spiel</button></div></div>`, { layer: 'ctx' });
     m.querySelector('[data-n]').onclick = () => { store.del('seg-save'); location.href = location.pathname; };
     return m;
@@ -759,7 +907,6 @@
 
   // ---------- Karte ----------
   function showCard(e, s) {
-    Sfx.card();
     const chance = e.deck === 'chance';
     const dc = chance ? '#f08a24' : '#1f5fbf';
     return new Promise(res => {
@@ -770,7 +917,7 @@
       let done = false;
       const close = () => { if (done) return; done = true; const bg = m.closest('.modal-bg'); bg.style.transition = 'opacity .3s'; bg.style.opacity = 0; setTimeout(() => { bg.remove(); res(); }, 300); };
       m.onclick = close;
-      setTimeout(close, 4200);
+      setTimeout(close, 4200 / A.speed);
     });
   }
 
@@ -881,13 +1028,19 @@
       <h3>Hypotheken</h3><ul><li>Bringt den halben Kaufpreis. Keine Miete solange belastet. Ablösen kostet +10 %.</li></ul>
       <h3>Gefängnis</h3><ul><li>Raus mit Pasch, 50 € Kaution oder Freikarte. Nach dem 3. Fehlversuch musst du zahlen. Im Gefängnis kassierst du trotzdem Miete.</li></ul>
       <h3>Pleite</h3><ul><li>Kannst du nicht zahlen, verkaufe Häuser oder nimm Hypotheken auf. Reicht es nicht, bist du raus – dein Besitz geht an den Gläubiger.</li></ul>
-      <h3>Online</h3><ul><li>Der Host hält das Spiel. Bricht die Verbindung ab, einfach mit demselben Code neu beitreten.</li><li>Tippe auf eine Spielerkarte, um mit dieser Person zu handeln.</li></ul>
+      <h3>Hausregeln (in der Lobby einstellbar)</h3><ul><li>Frei-Parken-Topf: Steuern, Strafen und Kautionen sammeln sich in der Mitte – wer auf Frei Parken landet, räumt ab.</li><li>Doppelt auf LOS: genau auf LOS landen bringt 400 €.</li><li>Rundenlimit: Nach der letzten Runde gewinnt das größte Vermögen (Geld + Grundstücke + Häuser).</li></ul>
+      <h3>Computer-Gegner</h3><ul><li>Bots kaufen, bauen, bieten mit und machen dir auch Tauschangebote.</li><li>Verliert jemand online die Verbindung, spielt nach 20 Sekunden ein Bot weiter, bis die Person zurück ist.</li></ul>
+      <h3>Online</h3><ul><li>Im Chat-Tab könnt ihr schreiben, mit 😀 schickst du Reaktionen.</li><li>Der Host hält das Spiel. Bricht die Verbindung ab, einfach mit demselben Code neu beitreten.</li><li>Tippe auf eine Spielerkarte, um mit dieser Person zu handeln.</li></ul>
       </div><div class="row"><button class="btn primary" data-x>Los geht's</button></div></div>`, { onBg: () => closeModal(m) });
     m.querySelector('[data-x]').onclick = () => closeModal(m);
   };
   $('#btn-sound').onclick = () => { const mu = Sfx.toggle(); $('#btn-sound').textContent = mu ? '🔇' : '🔊'; };
   $('#btn-sound').textContent = Sfx.muted ? '🔇' : '🔊';
   $('#btn-follow').onclick = () => { Board3D.setFollow(!Board3D.follow); $('#btn-follow').classList.toggle('off', !Board3D.follow); toast(Board3D.follow ? '🎥 Kamera folgt der Figur' : '🎥 Kamera frei'); };
+  const speedBtn = h(`<button class="icon-btn" title="Animationstempo">⏩</button>`);
+  $('.top-actions').prepend(speedBtn);
+  const applySpeed = () => { Board3D.setSpeed(A.speed); speedBtn.classList.toggle('off', A.speed === 1); };
+  speedBtn.onclick = () => { A.speed = A.speed === 1 ? 2 : 1; store.set('seg-speed', A.speed); applySpeed(); toast(A.speed > 1 ? '⏩ Schnelle Animationen' : '▶️ Normale Animationen'); };
   $('#btn-panel').onclick = () => $('#side').classList.toggle('open');
 
   // Reaktionen
@@ -973,6 +1126,7 @@
 
   // ======================================================================
   A.ready = Board3D.init($('#scene'));
+  A.ready.then(applySpeed);
   A.ready.catch(e => { console.error(e); toast('3D konnte nicht starten: ' + e.message, 'err'); });
   window.addEventListener('beforeunload', e => { if (A.role === 'host' && A.started && A.G && A.G.phase === 'playing') { e.preventDefault(); e.returnValue = ''; } });
 })();
